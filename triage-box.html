@@ -1,0 +1,180 @@
+<!--
+  AE TRIAGE BOX  (drop-in block)
+  Paste this whole block into your dashboard HTML where you want the box to appear.
+  Synthetic data only. Rule-based demo, not validated for regulatory use.
+  A qualified human reviewer makes every real PV decision.
+-->
+<section id="ae-triage" aria-labelledby="aet-title">
+<style>
+  #ae-triage{--bg:#241711;--bg2:#1a100c;--line:#4a3322;--text:#f3e6d8;--muted:#b99f88;--accent:#f5a623;--red:#e5675a;--green:#7fc98a;
+    color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:20px;margin:24px 0;font-family:inherit}
+  #ae-triage h2{margin:0 0 4px;font-size:1.25rem;color:var(--text)}
+  #ae-triage .aet-sub{margin:0 0 14px;color:var(--muted);font-size:.9rem;line-height:1.45}
+  #ae-triage textarea{width:100%;min-height:110px;box-sizing:border-box;background:var(--bg2);color:var(--text);border:1px solid var(--line);
+    border-radius:10px;padding:12px;font:inherit;line-height:1.45;resize:vertical}
+  #ae-triage textarea:focus,#ae-triage button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #ae-triage .aet-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  #ae-triage button{cursor:pointer;border-radius:10px;padding:10px 16px;font:inherit;font-weight:600;border:1px solid var(--accent)}
+  #ae-triage .aet-go{background:var(--accent);color:#1a100c}
+  #ae-triage .aet-alt{background:transparent;color:var(--accent)}
+  #ae-triage .aet-result{margin-top:16px;border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--bg2)}
+  #ae-triage .aet-badge{display:inline-block;padding:4px 12px;border-radius:999px;font-weight:700;font-size:.9rem}
+  #ae-triage .aet-badge.serious{background:rgba(229,103,90,.18);color:var(--red);border:1px solid var(--red)}
+  #ae-triage .aet-badge.routine{background:rgba(127,201,138,.15);color:var(--green);border:1px solid var(--green)}
+  #ae-triage dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:12px 0 0;font-size:.92rem}
+  #ae-triage dt{color:var(--muted)} #ae-triage dd{margin:0;overflow-wrap:anywhere}
+  #ae-triage .aet-warn{margin-top:10px;color:var(--accent);font-size:.88rem}
+  #ae-triage ol{margin:12px 0 0;padding-left:18px;color:var(--muted);font-size:.85rem}
+  #ae-triage .aet-hist-title{margin:16px 0 0;font-size:.95rem;color:var(--muted)}
+  @media (max-width:520px){#ae-triage dl{grid-template-columns:1fr}}
+</style>
+
+  <h2 id="aet-title">Triage a new case</h2>
+  <p class="aet-sub">Paste a synthetic adverse event report. The tool checks it against the standard seriousness criteria
+    (death, life-threatening, hospitalisation, disability, congenital anomaly, medically important event) and suggests a reporting clock.
+    Demo only: no real patient data, and a human reviewer makes the final decision.</p>
+
+  <label for="aet-input" style="display:block;margin-bottom:6px;color:var(--muted);font-size:.9rem">Case narrative</label>
+  <textarea id="aet-input" placeholder="Example: 72-year-old male on Drug X 50 mg developed chest pain and was hospitalised. Recovering."></textarea>
+
+  <div class="aet-row">
+    <button type="button" class="aet-go" id="aet-run">Triage case</button>
+    <button type="button" class="aet-alt" id="aet-sample">Load sample case</button>
+    <button type="button" class="aet-alt" id="aet-clear">Clear</button>
+  </div>
+
+  <div id="aet-out" class="aet-result" hidden aria-live="polite"></div>
+  <p class="aet-hist-title" id="aet-hist-title" hidden>Triaged this session</p>
+  <ol id="aet-hist"></ol>
+
+<script>
+(function () {
+  // OPTIONAL: put the id of your KPI number elements here so the cards update.
+  // Example: right-click a KPI number > Inspect, copy its id, paste below. Leave '' to skip.
+  var HOOKS = { queue: '', sae: '', expedited: '' };
+
+  var SAMPLES = [
+    "72-year-old male on Drug X 50 mg developed chest pain and was hospitalised for 4 days. Recovering.",
+    "34-year-old female taking Drug Y reported mild headache after the first dose. No hospitalisation. Recovered.",
+    "58-year-old man received Drug Z and developed cardiac arrest. Patient died the next day."
+  ];
+  var sampleIdx = 0;
+
+  // level: fatal / life = 7-day clock, serious = 15-day clock
+  var CRITERIA = [
+    { name: 'Death',                    level: 'fatal',   re: /\b(died|death|deceased|fatal|passed away|expired)\b/ig },
+    { name: 'Life-threatening',         level: 'life',    re: /\b(life[- ]threatening|cardiac arrest|respiratory arrest|anaphyla\w*|status epilepticus|intubat\w*|resuscitat\w*|septic shock)\b/ig },
+    { name: 'Hospitalisation',          level: 'serious', re: /\b(hospitali[sz]\w*|admitted|admission|icu|intensive care|emergency (?:room|department)|prolonged (?:hospital\w*|stay))\b/ig },
+    { name: 'Disability / incapacity',  level: 'serious', re: /\b(disabilit\w*|incapacit\w*|paraly\w*|permanent(?:ly)? (?:damage|impair\w*)|blindness)\b/ig },
+    { name: 'Congenital anomaly',       level: 'serious', re: /\b(birth defect|congenital|malformation)\b/ig },
+    { name: 'Medically important event',level: 'serious', re: /\b(stevens[- ]johnson|liver failure|hepatotoxic\w*|seizure\w*|angioedema|agranulocytosis|qt prolongation|myocardial infarction|stroke|suicid\w*|overdose)\b/ig }
+  ];
+
+  var STOP = /^(the|a|an|his|her|their|day|days|week|weeks|month|months|dose|doses|treatment|therapy|medication|drug|it|this|that|admission|hospital)$/i;
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, text, cls) { var n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
+
+  function isNegated(text, idx) {
+    var before = text.slice(Math.max(0, idx - 45), idx);
+    var part = before.split(/[.;\n]/).pop();
+    return /\b(no|not|without|denies|denied|never|neither|nor)\b/i.test(part);
+  }
+
+  function analyse(text) {
+    var found = [], rank = 0;
+    CRITERIA.forEach(function (c) {
+      var m; c.re.lastIndex = 0;
+      while ((m = c.re.exec(text)) !== null) {
+        if (!isNegated(text, m.index)) {
+          if (found.indexOf(c.name) === -1) found.push(c.name);
+          rank = Math.max(rank, c.level === 'fatal' ? 3 : c.level === 'life' ? 2 : 1);
+          break;
+        }
+      }
+    });
+
+    var age = (text.match(/(\d{1,3})[- ]?(?:year|yr)s?[- ]?old/i) || text.match(/\bage[d]?\s*(\d{1,3})/i) || [])[1];
+    var sexM = text.match(/\b(male|female|man|woman|boy|girl)\b/i);
+    var sex = sexM ? (/^(male|man|boy)$/i.test(sexM[1]) ? 'Male' : 'Female') : null;
+
+    var drug = null, dm, dre = /\b(?:taking|took|on|after|started|received|given|administered|treated with|dose of)\s+([A-Za-z][\w-]*(?:\s+[A-Z0-9][\w-]*)?(?:\s+\d+\s?(?:mg|mcg|g|ml))?)/g;
+    while ((dm = dre.exec(text)) !== null) {
+      var first = dm[1].split(/\s+/)[0];
+      if (!STOP.test(first)) { drug = dm[1].trim(); break; }
+    }
+
+    var ev = (text.match(/(?:developed|experienced|reported|complained of|presented with|suffered|had)\s+([^.,;]+?)(?=\s+(?:and|after|following|which|requiring|on day|within)\b|[.,;]|$)/i) || [])[1] || null;
+
+    var outcome = 'Unknown';
+    if (rank === 3) outcome = 'Fatal';
+    else if (/\b(not recovered|unresolved|ongoing|persist\w*)\b/i.test(text)) outcome = 'Not recovered';
+    else if (/\b(recovering|improving)\b/i.test(text)) outcome = 'Recovering';
+    else if (/\b(recovered|resolved)\b/i.test(text)) outcome = 'Recovered / resolved';
+
+    var missing = [];
+    if (!drug) missing.push('suspect drug');
+    if (!ev) missing.push('adverse event term');
+    if (!age) missing.push('patient age');
+    if (!sex) missing.push('patient sex');
+
+    return { found: found, rank: rank, age: age, sex: sex, drug: drug, ev: ev, outcome: outcome, missing: missing };
+  }
+
+  function bump(id) {
+    if (!id) return;
+    var n = document.getElementById(id);
+    if (!n) return;
+    var v = parseInt(n.textContent.replace(/[^\d]/g, ''), 10);
+    if (!isNaN(v)) n.textContent = String(v + 1);
+  }
+
+  function render(r) {
+    var out = $('aet-out');
+    out.textContent = '';
+    var serious = r.rank > 0;
+    var badge = el('span', serious ? 'Serious (SAE)' : 'Non-serious', 'aet-badge ' + (serious ? 'serious' : 'routine'));
+    out.appendChild(badge);
+
+    var clock = r.rank >= 2 ? '7-day expedited report (fatal or life-threatening, if unexpected)'
+              : r.rank === 1 ? '15-day expedited report (if unexpected)'
+              : 'Routine / periodic reporting';
+    var reason = serious ? r.found.join(', ') : 'No seriousness criteria found in the text';
+
+    var dl = el('dl');
+    [['Why', reason], ['Reporting clock', clock], ['Suspect drug', r.drug || 'Not found'],
+     ['Event', r.ev || 'Not found'], ['Patient', [r.age ? r.age + ' years' : null, r.sex].filter(Boolean).join(', ') || 'Not found'],
+     ['Outcome', r.outcome]].forEach(function (p) { dl.appendChild(el('dt', p[0])); dl.appendChild(el('dd', p[1])); });
+    out.appendChild(dl);
+
+    if (r.missing.length) out.appendChild(el('p', 'Follow-up needed: ' + r.missing.join(', ') + '.', 'aet-warn'));
+    out.appendChild(el('p', 'Suggestion only. Expectedness against the reference safety information still needs a human reviewer.', 'aet-sub'));
+    out.hidden = false;
+  }
+
+  function addHistory(text, r) {
+    var li = el('li', (r.rank > 0 ? '[SAE] ' : '[Non-serious] ') + text.slice(0, 80) + (text.length > 80 ? '...' : ''));
+    var list = $('aet-hist');
+    list.insertBefore(li, list.firstChild);
+    $('aet-hist-title').hidden = false;
+  }
+
+  $('aet-run').addEventListener('click', function () {
+    var text = $('aet-input').value.trim();
+    if (!text) { $('aet-input').focus(); return; }
+    var r = analyse(text);
+    render(r);
+    addHistory(text, r);
+    bump(HOOKS.queue);
+    if (r.rank > 0) bump(HOOKS.sae);
+    if (r.rank > 0) bump(HOOKS.expedited);
+  });
+  $('aet-sample').addEventListener('click', function () {
+    $('aet-input').value = SAMPLES[sampleIdx++ % SAMPLES.length];
+  });
+  $('aet-clear').addEventListener('click', function () {
+    $('aet-input').value = ''; $('aet-out').hidden = true;
+  });
+})();
+</script>
+</section>
